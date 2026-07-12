@@ -1,0 +1,11 @@
+{
+    "name": "vulkan-learning-project",
+    "version-string": "0.1.0",
+    "dependencies": [
+        "volk",
+        "glfw3",
+        "glm",
+        "shaderc",
+        "vulkan-memory-allocator"
+    ]
+}
