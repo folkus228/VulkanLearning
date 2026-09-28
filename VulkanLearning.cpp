@@ -85,7 +85,7 @@ int main()
     VkSurfaceKHR surface; // поверхность конкретно нашего окна
     if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS)
         throw std::runtime_error("CreateSurface");
-
+     
     uint32_t physicalDeviceCount = 0; // берем все видюхи
     vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr);
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
@@ -117,7 +117,7 @@ int main()
             break;
     }
 
-    float priority = 1.0f; // приоритет перед другими приложениями (1 - максимально | 2 - минимально)
+    float priority = 1.0f; // приоритет перед другими приложениями (1 - максимально | 0 - минимально)
 
     VkDeviceQueueCreateInfo queueCreateInfo{};
     queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -170,6 +170,15 @@ int main()
     std::vector<VkSurfaceFormatKHR> surfaceFormats(surfaceFormatCount);
     vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &surfaceFormatCount, surfaceFormats.data());
     VkSurfaceFormatKHR surfaceFormat = surfaceFormats[0]; // ? должен быть цикл с выбором лучшего
+    for (const auto& format : surfaceFormats)
+    {
+        if (format.format == VK_FORMAT_B8G8R8A8_UNORM &&
+            format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+        {
+            surfaceFormat = format;
+            break;
+        }
+    }
 
     uint32_t presentModeCount = 0; // как менять кадры
     vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &presentModeCount, nullptr);
@@ -248,12 +257,12 @@ int main()
     if (vkCreateCommandPool(deviceHandle, &commandPoolCreateInfo, nullptr, &commandPool) != VK_SUCCESS)
         throw std::runtime_error("vkCreateCommandPool");
 
-    std::vector<VkCommandBuffer> commandBuffers(swapchainImageCount); // создание буфера команд под каждую картинку
     VkCommandBufferAllocateInfo commandBufferAllocateInfo{};
     commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     commandBufferAllocateInfo.commandPool = commandPool;
     commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     commandBufferAllocateInfo.commandBufferCount = swapchainImageCount;
+    std::vector<VkCommandBuffer> commandBuffers(swapchainImageCount); // создание буфера команд под каждую картинку
     if (vkAllocateCommandBuffers(deviceHandle, &commandBufferAllocateInfo, commandBuffers.data()) != VK_SUCCESS)
         throw std::runtime_error("vkAllocateCommandBuffers");
 
@@ -290,13 +299,12 @@ int main()
     offscreenImageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     // Объявляем аллокацию вместо VkDeviceMemory
-    VmaAllocation offscreenAllocation;
-
     VmaAllocationCreateInfo offscreenAllocInfo{};
     offscreenAllocInfo.usage = VMA_MEMORY_USAGE_AUTO; // подбери память сам
     offscreenAllocInfo.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT; // но хотелось бы DEVICE_LOCAL_BIT
 
     // Этот вызов сам создаст картинку и выделит под нее оптимальную память
+    VmaAllocation offscreenAllocation;
     VkImage offscreenImage;
     if (vmaCreateImage(allocator, &offscreenImageCreateInfo, &offscreenAllocInfo,
         &offscreenImage, &offscreenAllocation, nullptr) != VK_SUCCESS) {
@@ -360,12 +368,12 @@ int main()
         VMA_ALLOCATION_CREATE_MAPPED_BIT; // открыть память для прямой записи
 
     VkBuffer vertexBuffer;
-    VmaAllocation vertexAllocation;
+    VmaAllocation vertexAllocation; // просто handl выделенной памяти
     if (vmaCreateBuffer(allocator, &vertexBufferCreateInfo, &vertexAllocInfo,
         &vertexBuffer, &vertexAllocation, nullptr) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create vertex buffer via VMA");
     }
-    VmaAllocationInfo vertexAllocData;
+    VmaAllocationInfo vertexAllocData; // конкретные данные выделенной памяти
     vmaGetAllocationInfo(allocator, vertexAllocation, &vertexAllocData);
     memcpy(vertexAllocData.pMappedData, vertices.data(), sizeof(Vertex) * vertices.size());
 
@@ -436,7 +444,9 @@ int main()
     //////////////////////////////////
     // Биндим картинку в descriptor //
     //////////////////////////////////
-    VkDescriptorSetLayoutBinding samplerBinding{};
+
+    /////////////// Дескриптор для чтения данных шейдером
+    VkDescriptorSetLayoutBinding samplerBinding{}; // описание одного слота
     samplerBinding.binding = 0;
     samplerBinding.descriptorCount = 1;
     samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -467,6 +477,8 @@ int main()
     VkDescriptorSet descriptorSet; // объединяет контейнер и все описания layout'ов
     vkAllocateDescriptorSets(deviceHandle, &descriptorAllocateInfo, &descriptorSet);
 
+
+    /////////////// Дескриптор для записи данных в поле
     VkDescriptorImageInfo descriptorImageInfo{};
     descriptorImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     descriptorImageInfo.imageView = offscreenImageView;
@@ -498,17 +510,17 @@ int main()
     scenePipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     scenePipelineLayoutCreateInfo.pushConstantRangeCount = 1;
     scenePipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
-    VkPipelineLayout scenePipelineLayout;
+    VkPipelineLayout scenePipelineLayout;                                                                                                   // VkPipelineLayout (определяет ресурсы \ пуш константы и дэскрипторы)
     vkCreatePipelineLayout(deviceHandle, &scenePipelineLayoutCreateInfo, nullptr, &scenePipelineLayout);
 
     VkPipelineLayoutCreateInfo screenPipelineLayoutCreateInfo{}; // второй конвеер
     screenPipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     screenPipelineLayoutCreateInfo.setLayoutCount = 1;
     screenPipelineLayoutCreateInfo.pSetLayouts = &descriptorSetLayout;
-    VkPipelineLayout screenPipelineLayout;
+    VkPipelineLayout screenPipelineLayout;                                                                                                  // VkPipelineLayout (ресурсы для стадии \ дескрипторы, пуши и тд)
     vkCreatePipelineLayout(deviceHandle, &screenPipelineLayoutCreateInfo, nullptr, &screenPipelineLayout);
 
-    VkPipelineShaderStageCreateInfo shaderStages[2]{}; // указываем стадии рендеринга
+    VkPipelineShaderStageCreateInfo shaderStages[2]{}; // указываем стадии рендеринга                                                       // VkPipelineShaderStageCreateInfo (работа на стадии шейдеров \ передача констант, точки входа, тип)
     shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     shaderStages[0].module = sceneVertexShader;
@@ -518,12 +530,12 @@ int main()
     shaderStages[1].module = sceneFragmentShader;
     shaderStages[1].pName = "main";
 
-    VkVertexInputBindingDescription binding{}; // говорим как читать данные
+    VkVertexInputBindingDescription binding{}; // с каким шагом читать
     binding.binding = 0; // номер аппаратного слота
     binding.stride = sizeof(Vertex); // размер одной вершины
     binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    VkVertexInputAttributeDescription attributes[2]{}; // описание внутренних переменных вершины
+    VkVertexInputAttributeDescription attributes[2]{}; // описывает каждую часть вершины и подвязывает к слотам шейдера
     // Атрибут 0: Позиция
     attributes[0].binding = 0;
     attributes[0].location = 0;
@@ -535,14 +547,14 @@ int main()
     attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributes[1].offset = offsetof(Vertex, color);
 
-    VkPipelineVertexInputStateCreateInfo vertexInputState{}; // настраиваем все параметры и данные к шейдеру
+    VkPipelineVertexInputStateCreateInfo vertexInputState{}; // настраиваем все параметры и данные к шейдеру                                // VkPipelineVertexInputStateCreateInfo (че делать с вершинами \ шаги, типы переменных, к каким слотам биндить)
     vertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputState.vertexBindingDescriptionCount = 1;
     vertexInputState.pVertexBindingDescriptions = &binding;
     vertexInputState.vertexAttributeDescriptionCount = 2;
     vertexInputState.pVertexAttributeDescriptions = attributes;
 
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};                                                                                 // VkPipelineInputAssemblyStateCreateInfo (как собирать примитивы \ какая геометрия будет на выходе)
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; // в какую геометрию собираем
 
@@ -556,25 +568,27 @@ int main()
     VkRect2D scissor{};
     scissor.extent = extent;
 
-    VkPipelineViewportStateCreateInfo viewportState{};
+    VkPipelineViewportStateCreateInfo viewportState{};                                                                                      // VkPipelineViewportStateCreateInfo (говорит с каким пространством и какого размера работаем \ Viewport - задает трансформацию NDC -> экранные координаты, Scisor - обрезает растеризацию)
     viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
     viewportState.viewportCount = 1;
     viewportState.pViewports = &viewport;
     viewportState.scissorCount = 1;
     viewportState.pScissors = &scissor;
 
-    VkPipelineRasterizationStateCreateInfo rasterizer{}; // правила отрисовки
+    VkPipelineRasterizationStateCreateInfo rasterizer{}; // правила отрисовки                                                               // VkPipelineRasterizationStateCreateInfo ( говорит правила растеризации)
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
     rasterizer.cullMode = VK_CULL_MODE_NONE; // когда показывать грань
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; // когда считать что грань повернута лицом
 
-    VkPipelineMultisampleStateCreateInfo multisampling{}; // сглаживание геометрии
+    VkPipelineMultisampleStateCreateInfo multisampling{}; // сглаживание геометрии                                                          // VkPipelineMultisampleStateCreateInfo (MSAA)
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; // отрисовывать честно пиксель
 
-    VkPipelineColorBlendAttachmentState blendAttachment{}; // решает что делать с наложением
+    // VkPipelineDepthStencilStateCreateInfo ()
+
+    VkPipelineColorBlendAttachmentState blendAttachment{}; // решает что делать с наложением                                                // VkPipelineColorBlendAttachmentState (блендинг (один на каждый атачмент?))
     blendAttachment.colorWriteMask = // дает доступ к перезаписи каналов
         VK_COLOR_COMPONENT_R_BIT |
         VK_COLOR_COMPONENT_G_BIT |
@@ -582,7 +596,7 @@ int main()
         VK_COLOR_COMPONENT_A_BIT;
     blendAttachment.blendEnable = VK_FALSE; // смешивание цветов
 
-    VkPipelineColorBlendStateCreateInfo colorBlendState{};
+    VkPipelineColorBlendStateCreateInfo colorBlendState{};                                                                                  // VkPipelineColorBlendStateCreateInfo ()
     colorBlendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     colorBlendState.logicOpEnable = VK_FALSE; // логические попиксельные операции
     colorBlendState.attachmentCount = 1; // настройка цвета только для одной текстуры
@@ -593,17 +607,18 @@ int main()
         VK_DYNAMIC_STATE_VIEWPORT,
         VK_DYNAMIC_STATE_SCISSOR
     };
-    VkPipelineDynamicStateCreateInfo dynamicState{}; // динамические состояния, которые придеться передавать в цикле
+    VkPipelineDynamicStateCreateInfo dynamicState{}; // динамические состояния, которые придеться передавать в цикле                        // VkPipelineDynamicStateCreateInfo (что вынести в runtime)
     dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     dynamicState.dynamicStateCount = 2;
     dynamicState.pDynamicStates = dynamicStates;
 
-    VkPipelineRenderingCreateInfo renderingInfo{};
+    VkPipelineRenderingCreateInfo renderingInfo{};                                                                                          // ?
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pColorAttachmentFormats = &surfaceFormat.format; // данные о цветовой политре surface
 
-    VkGraphicsPipelineCreateInfo pipelineCreateInfo{};
+    // есть еще VkComputePipelineCreateInfo
+    VkGraphicsPipelineCreateInfo pipelineCreateInfo{};                                                                                      // VkGraphicsPipelineCreateInfo (собирает все в один pipeline \ можно указать от какого pipeline отталкиваться при компиляции)
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineCreateInfo.pNext = &renderingInfo;
     pipelineCreateInfo.stageCount = 2; // бедет задействованы два шейдера
@@ -700,7 +715,6 @@ int main()
             1,
             &barrier);
 
-
         VkRenderingAttachmentInfo colorAttachment{};
         colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         colorAttachment.imageView = offscreenImageView;
@@ -709,7 +723,7 @@ int main()
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 
         VkClearValue clear{};
-        clear.color = { {0.08f,0.08f,0.10f,1.0f} };
+        clear.color = { {0.05f,0.05f,0.05f,1.0f} };
 
         colorAttachment.clearValue = clear;
 
@@ -741,7 +755,6 @@ int main()
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipeline);
 
         VkDeviceSize vertexOffset = 0;
-
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, &vertexOffset);
 
         vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
