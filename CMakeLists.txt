@@ -30,7 +30,7 @@ find_package(VulkanMemoryAllocator CONFIG REQUIRED)
 
 
 # Добавьте источник в исполняемый файл этого проекта.
-add_executable (VulkanLearning "VulkanLearning.cpp" )
+add_executable (VulkanLearning "VulkanLearning.cpp"  "VulkanInterface.h" "VulkanLearning_old.cpp")
 
 target_link_libraries(VulkanLearning PRIVATE 
     glfw

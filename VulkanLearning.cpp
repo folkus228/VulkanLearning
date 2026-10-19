@@ -1,40 +1,5 @@
-﻿#include <volk.h>
-#include <GLFW/glfw3.h>
-
-#include <shaderc/shaderc.hpp>
-
-#define VMA_IMPLEMENTATION
-#define VMA_STATIC_VULKAN_FUNCTIONS 0
-#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
-#include <vk_mem_alloc.h>
-
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-
-#include <vector>
-#include <array>
-#include <fstream>
-#include <iostream>
-#include <chrono>
-#include <cstring>
-#include <stdexcept>
-
-std::vector<char> ReadBinary(const std::string& file)
-{
-    std::ifstream stream(file, std::ios::binary);
-
-    if (!stream.is_open())
-        throw std::runtime_error("Cannot open file");
-
-    stream.seekg(0, std::ios::end);
-    size_t size = stream.tellg();
-    stream.seekg(0);
-
-    std::vector<char> data(size);
-    stream.read(data.data(), size);
-
-    return data;
-}
+﻿
+#include "VulkanInterface.h"
 
 struct Vertex
 {
@@ -54,121 +19,54 @@ int main()
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "Vulkan", nullptr, nullptr); // создали окно 
+    GLFWwindow* window = glfwCreateWindow(1280, 720, "Vulkan", nullptr, nullptr); // создали окно
 
-    ////////////////////////////////////////
-    // Инициализация и подготовка Vulkan  //
-    ////////////////////////////////////////
-    volkInitialize();
-    VkApplicationInfo applicationInfo{};                        // настроили имена и версии
-    applicationInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    applicationInfo.pApplicationName = "Example";
-    applicationInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-    applicationInfo.pEngineName = "None";
-    applicationInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    applicationInfo.apiVersion = VK_API_VERSION_1_3;
+        ////////////////////////////////////////
+        // Инициализация и подготовка Vulkan  //
+        ////////////////////////////////////////
 
-    uint32_t glfwExtensionCount = 0;
-    const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount); // достали расширения для работы с glfw
+    InitVulkanInterface initVulkanInterface;
+    initVulkanInterface.applicationInfo.pApplicationName = "Example";
+    initVulkanInterface.applicationInfo.pEngineName = "None";
+    VulkanInterface::Init(initVulkanInterface, window);
 
-    VkInstanceCreateInfo instanceCreateInfo{}; // даем версии и расширения для работы с glfw
-    instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    instanceCreateInfo.pApplicationInfo = &applicationInfo;
-    instanceCreateInfo.enabledExtensionCount = glfwExtensionCount;
-    instanceCreateInfo.ppEnabledExtensionNames = glfwExtensions;
+    std::vector<VkPhysicalDevice> devices = VulkanInterface::GetDevices();
+    for (auto& device : devices)
+        PrintDeviceData(device);
+    VkPhysicalDevice physicalDevice = devices[0]; // TODO: искать девайс по возможностям и семействам которые на нем есть
 
-    VkInstance instance; // создаем главный объект instance
-    if (vkCreateInstance(&instanceCreateInfo, nullptr, &instance) != VK_SUCCESS)
-        throw std::runtime_error("vkCreateInstance");
-    volkLoadInstance(instance);
-
-    VkSurfaceKHR surface; // поверхность конкретно нашего окна
-    if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS)
-        throw std::runtime_error("CreateSurface");
-     
-    uint32_t physicalDeviceCount = 0; // берем все видюхи
-    vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr);
-    std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
-    vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, physicalDevices.data());
-
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     uint32_t graphicsQueueFamily = 0; // запомним номер графического семейства
+    std::vector<VkQueueFamilyProperties> queueFamilys = VulkanInterface::GetDeviceQueueFamilys(physicalDevice);
 
-    for (auto device : physicalDevices) // бежим по всем картам
+    for (uint32_t i = 0; i < queueFamilys.size(); i++)
     {
-        uint32_t familyCount = 0;  // получили все семейства чипов на карте
-        vkGetPhysicalDeviceQueueFamilyProperties(device, &familyCount, nullptr);
-        std::vector<VkQueueFamilyProperties> families(familyCount);
-        vkGetPhysicalDeviceQueueFamilyProperties(device, &familyCount, families.data());
-
-        for (uint32_t i = 0;i < familyCount;i++)
+        VkBool32 presentSupport = VK_FALSE;
+        vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, VulkanInterface::mainSurface, &presentSupport);  // поддержка работы с нашим окном
+        //                           VkQueueFlagBits
+        if ((queueFamilys[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presentSupport) // поддержка работы с графикой и окном
         {
-            VkBool32 presentSupport = VK_FALSE;
-            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);  // поддержка работы с нашим окном
-
-            if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presentSupport) // поддержка работы с графикой и окном
-            {
-                physicalDevice = device;
-                graphicsQueueFamily = i;
-                break;
-            }
-        }
-        if (physicalDevice != VK_NULL_HANDLE)
+            graphicsQueueFamily = i;
             break;
+        }
     }
 
-    float priority = 1.0f; // приоритет перед другими приложениями (1 - максимально | 0 - минимально)
-
-    VkDeviceQueueCreateInfo queueCreateInfo{};
-    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queueCreateInfo.queueFamilyIndex = graphicsQueueFamily;
-    queueCreateInfo.queueCount = 1;
-    queueCreateInfo.pQueuePriorities = &priority;
-
+    VulkanInterfaceCreateDevice CD(physicalDevice, 1, graphicsQueueFamily);
     VkPhysicalDeviceDynamicRenderingFeatures dynamicRendering{};
     dynamicRendering.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
     dynamicRendering.dynamicRendering = VK_TRUE;
-
+    CD.deviceCreateInfo.pNext = &dynamicRendering;
     const char* deviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME }; // запрос на конкретно отрисовку пикселей на экране
+    CD.SetEnabledExtensions(deviceExtensions, 1);
+    CD.ApplyPrioritys();
+    VkDevice deviceHandle = CD.CreateDevice();
+    VmaAllocator allocator = CD.CreateAllocator();
 
-    VkDeviceCreateInfo deviceCreateInfo{};
-    deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    deviceCreateInfo.pNext = &dynamicRendering; // добавили структуру динамического рендеринга
-    deviceCreateInfo.queueCreateInfoCount = 1; // одна ⇩⇩⇩⇩⇩ очередь
-    deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
-    deviceCreateInfo.enabledExtensionCount = 1; // одно ⇩⇩⇩⇩⇩ расширение
-    deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions;
+    VkQueue graphicsQueue = VulkanInterface::CreateQueue(deviceHandle, graphicsQueueFamily); // наша графическая очередь (будем отправлять команды через нее)
+    VkSurfaceCapabilitiesKHR surfaceCapabilities = VulkanInterface::CreateSurfaceCapabilities(physicalDevice, VulkanInterface::mainSurface); // возможности работы с монитором (min и max разрешение и поддерживоемое кол-во буфферов)
 
-    VkDevice deviceHandle;
-    if (vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &deviceHandle) != VK_SUCCESS)
-        throw std::runtime_error("vkCreateDevice");
-    volkLoadDevice(deviceHandle); // загрузили прямые и самые быстрые укащатели для конкретно этой карты
+    VkSurfaceKHR& surface = VulkanInterface::mainSurface;
 
-    VkQueue graphicsQueue; // наша графическая очередь (будем отправлять команды через нее)
-    vkGetDeviceQueue(deviceHandle, graphicsQueueFamily, 0, &graphicsQueue);
-
-    VmaVulkanFunctions vulkanFunctions{}; // передаем функции для работы
-    vulkanFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
-    vulkanFunctions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
-
-    VmaAllocatorCreateInfo allocatorCreateInfo{};
-    allocatorCreateInfo.instance = instance;
-    allocatorCreateInfo.physicalDevice = physicalDevice;
-    allocatorCreateInfo.device = deviceHandle;
-    allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions; // Связываем volk и VMA
-    allocatorCreateInfo.vulkanApiVersion = VK_API_VERSION_1_3;
-
-    VmaAllocator allocator;
-    if (vmaCreateAllocator(&allocatorCreateInfo, &allocator) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create VMA allocator");
-
-    VkSurfaceCapabilitiesKHR surfaceCapabilities; // возможности работы с монитором (min и max разрешение и поддерживоемое кол-во буфферов)
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCapabilities);
-
-    uint32_t surfaceFormatCount = 0; // поддерживаемые цветовые форматы
-    vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &surfaceFormatCount, nullptr);
-    std::vector<VkSurfaceFormatKHR> surfaceFormats(surfaceFormatCount);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &surfaceFormatCount, surfaceFormats.data());
+    std::vector<VkSurfaceFormatKHR> surfaceFormats = VulkanInterface::GetSurfaceFormats(physicalDevice, surface);
     VkSurfaceFormatKHR surfaceFormat = surfaceFormats[0]; // ? должен быть цикл с выбором лучшего
     for (const auto& format : surfaceFormats)
     {
@@ -180,11 +78,7 @@ int main()
         }
     }
 
-    uint32_t presentModeCount = 0; // как менять кадры
-    vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &presentModeCount, nullptr);
-    std::vector<VkPresentModeKHR> presentModes(presentModeCount);
-    vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &presentModeCount, presentModes.data());
-
+    std::vector<VkPresentModeKHR> presentModes = VulkanInterface::GetPresentModes(physicalDevice, surface);
     VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR; // базовый v-sync
     for (auto mode : presentModes)
         if (mode == VK_PRESENT_MODE_MAILBOX_KHR) // тройная буферизация и Fast Sync
@@ -193,148 +87,30 @@ int main()
             break;
         }
 
-    VkExtent2D extent;
-    if (surfaceCapabilities.currentExtent.width != UINT32_MAX) // система дала нам конкретный размер
-        extent = surfaceCapabilities.currentExtent;
-    else // не дала и мы делаем че хотим
-    {
-        extent.width = 1280;
-        extent.height = 720;
-    }
+    VkExtent2D extent = VulkanInterface::CreateExtent2D(surfaceCapabilities);
 
-    uint32_t imageCount = surfaceCapabilities.minImageCount + 1; // выставляем количество буфферов + 1 для кайфа
-    if (surfaceCapabilities.maxImageCount && imageCount > surfaceCapabilities.maxImageCount) // если перебрали, то уменьшаем
-        imageCount = surfaceCapabilities.maxImageCount;
+    VulkanInterfaceCreateSwapchain createSwapchein(surfaceCapabilities, surface, surfaceFormat);
+    VkSwapchainKHR swapchain = createSwapchein.CreateSwapchain(deviceHandle);
+    std::vector<VkImage> swapchainImages;
+    std::vector<VkImageView> swapchainImageViews;
+    createSwapchein.FillViews(swapchainImages, swapchainImageViews, swapchain, deviceHandle);
 
-    VkSwapchainCreateInfoKHR swapchainCreateInfo{};
-    swapchainCreateInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    swapchainCreateInfo.surface = surface;
-    swapchainCreateInfo.minImageCount = imageCount;
-    swapchainCreateInfo.imageFormat = surfaceFormat.format;
-    swapchainCreateInfo.imageColorSpace = surfaceFormat.colorSpace;
-    swapchainCreateInfo.imageExtent = extent;
-    swapchainCreateInfo.imageArrayLayers = 1; // количество картинок на кадр (типо для VR надо 2)
-    swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; // в картинки идет рендер цвета
-    swapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE; // картинками владеет только графическая очередь
-    swapchainCreateInfo.preTransform = surfaceCapabilities.currentTransform; // не переворачивать картинку (актуально для смартфонов)
-    swapchainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR; // Окно игры непрозрачное (рабочий стол сквозь него не виден)
-    swapchainCreateInfo.presentMode = presentMode; // пиксели, скрытые другими окнами видеокарта не будет обсчитывать
-    swapchainCreateInfo.clipped = VK_TRUE;
+    VulkanInterfaceCreateCommandPool createCommandPool(graphicsQueueFamily, swapchainImages.size());
+    VkCommandPool commandPool = createCommandPool.CreateCommandPool(deviceHandle);
+    std::vector<VkCommandBuffer> commandBuffers = createCommandPool.CreateCommandBuffers(deviceHandle);
 
-    VkSwapchainKHR swapchain;
-    if (vkCreateSwapchainKHR(deviceHandle, &swapchainCreateInfo, nullptr, &swapchain) != VK_SUCCESS)
-        throw std::runtime_error("vkCreateSwapchainKHR");
+    VulkanInterfaceCreateSemaphore createSemaphore;
+    VkSemaphore imageAvailableSemaphore = createSemaphore.Create(deviceHandle);
+    VkSemaphore renderFinishedSemaphore = createSemaphore.Create(deviceHandle);
 
-    uint32_t swapchainImageCount = 0; // забираем картинки сделанные для swapchain
-    vkGetSwapchainImagesKHR(deviceHandle, swapchain, &swapchainImageCount, nullptr);
-    std::vector<VkImage> swapchainImages(swapchainImageCount);
-    vkGetSwapchainImagesKHR(deviceHandle, swapchain, &swapchainImageCount, swapchainImages.data());
+    VulkanInterfaceCreateFence createFence;
+    VkFence frameFence = createFence.Create(deviceHandle);
 
-    std::vector<VkImageView> swapchainImageViews(swapchainImageCount); // создаем возможность правильно понимать данные текстуры
-    for (uint32_t i = 0; i < swapchainImageCount; i++)
-    {
-        VkImageViewCreateInfo imageViewCreateInfo{};
-        imageViewCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        imageViewCreateInfo.image = swapchainImages[i];
-        imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D; // просто 2D текстура
-        imageViewCreateInfo.format = surfaceFormat.format;
-        imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; // работаем с каналами цвета
-        imageViewCreateInfo.subresourceRange.baseMipLevel = 0;
-        imageViewCreateInfo.subresourceRange.levelCount = 1;
-        imageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
-        imageViewCreateInfo.subresourceRange.layerCount = 1;
+    VulkanInterfaceCreateImage createImage(extent.width, extent.height, surfaceFormat.format);
+    auto [offscreenImage, offscreenImageView, offscreenAllocation] = createImage.Create(deviceHandle, allocator);
 
-        if (vkCreateImageView(deviceHandle, &imageViewCreateInfo, nullptr, &swapchainImageViews[i]) != VK_SUCCESS)
-            throw std::runtime_error("vkCreateImageView");
-    }
-
-    VkCommandPoolCreateInfo commandPoolCreateInfo{}; // пул для GPU команд 
-    commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT; // выделить много памяти, каждый кадр перезаписывать
-    commandPoolCreateInfo.queueFamilyIndex = graphicsQueueFamily;
-
-    VkCommandPool commandPool;
-    if (vkCreateCommandPool(deviceHandle, &commandPoolCreateInfo, nullptr, &commandPool) != VK_SUCCESS)
-        throw std::runtime_error("vkCreateCommandPool");
-
-    VkCommandBufferAllocateInfo commandBufferAllocateInfo{};
-    commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    commandBufferAllocateInfo.commandPool = commandPool;
-    commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    commandBufferAllocateInfo.commandBufferCount = swapchainImageCount;
-    std::vector<VkCommandBuffer> commandBuffers(swapchainImageCount); // создание буфера команд под каждую картинку
-    if (vkAllocateCommandBuffers(deviceHandle, &commandBufferAllocateInfo, commandBuffers.data()) != VK_SUCCESS)
-        throw std::runtime_error("vkAllocateCommandBuffers");
-
-    VkSemaphoreCreateInfo semaphoreCreateInfo{}; // семафоры для синхронизации GPU
-    semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    VkSemaphore imageAvailableSemaphore; // картинка готова для записи
-    VkSemaphore renderFinishedSemaphore; // рендеринг закончен
-    vkCreateSemaphore(deviceHandle, &semaphoreCreateInfo, nullptr, &imageAvailableSemaphore);
-    vkCreateSemaphore(deviceHandle, &semaphoreCreateInfo, nullptr, &renderFinishedSemaphore);
-
-    VkFenceCreateInfo fenceCreateInfo{}; // фенсеры для синхронизации GPU и CPU
-    fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    VkFence frameFence;
-    vkCreateFence(deviceHandle, &fenceCreateInfo, nullptr, &frameFence);
-
-
-    VkImageCreateInfo offscreenImageCreateInfo{};
-    offscreenImageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    offscreenImageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
-    offscreenImageCreateInfo.extent.width = extent.width;
-    offscreenImageCreateInfo.extent.height = extent.height;
-    offscreenImageCreateInfo.extent.depth = 1;
-    offscreenImageCreateInfo.mipLevels = 1;
-    offscreenImageCreateInfo.arrayLayers = 1;
-    offscreenImageCreateInfo.format = surfaceFormat.format;
-    offscreenImageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL; // говорим по крутому разместить в памяти, CPU читать не сможет, но GPU будет летать
-    offscreenImageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // плевать что лежало до нас
-    offscreenImageCreateInfo.usage = // для чего будет использоваться
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | // можно писать цвет
-        VK_IMAGE_USAGE_SAMPLED_BIT | // можно читать в шейдере как обычную текстуру
-        VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // можно использовать как источник копирования
-    offscreenImageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    offscreenImageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    // Объявляем аллокацию вместо VkDeviceMemory
-    VmaAllocationCreateInfo offscreenAllocInfo{};
-    offscreenAllocInfo.usage = VMA_MEMORY_USAGE_AUTO; // подбери память сам
-    offscreenAllocInfo.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT; // но хотелось бы DEVICE_LOCAL_BIT
-
-    // Этот вызов сам создаст картинку и выделит под нее оптимальную память
-    VmaAllocation offscreenAllocation;
-    VkImage offscreenImage;
-    if (vmaCreateImage(allocator, &offscreenImageCreateInfo, &offscreenAllocInfo,
-        &offscreenImage, &offscreenAllocation, nullptr) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create offscreen image via VMA");
-    }
-
-    VkImageViewCreateInfo offscreenImageViewCreateInfo{}; // создаем для текстуры viewer
-    offscreenImageViewCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    offscreenImageViewCreateInfo.image = offscreenImage;
-    offscreenImageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    offscreenImageViewCreateInfo.format = surfaceFormat.format;
-    offscreenImageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    offscreenImageViewCreateInfo.subresourceRange.baseMipLevel = 0;
-    offscreenImageViewCreateInfo.subresourceRange.levelCount = 1;
-    offscreenImageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
-    offscreenImageViewCreateInfo.subresourceRange.layerCount = 1;
-    VkImageView offscreenImageView;
-    vkCreateImageView(deviceHandle, &offscreenImageViewCreateInfo, nullptr, &offscreenImageView);
-
-    VkSamplerCreateInfo samplerCreateInfo{}; // правила фильтрации текстуры
-    samplerCreateInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerCreateInfo.magFilter = VK_FILTER_LINEAR;
-    samplerCreateInfo.minFilter = VK_FILTER_LINEAR;
-    samplerCreateInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    samplerCreateInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerCreateInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerCreateInfo.maxLod = 1.0f;
-    VkSampler offscreenSampler;
-    vkCreateSampler(deviceHandle, &samplerCreateInfo, nullptr, &offscreenSampler);
+    VulkanInterfaceCreateSampler createSampler;
+    VkSampler offscreenSampler = createSampler.Create(deviceHandle);
 
 
     ////////////////////////////////
@@ -363,7 +139,7 @@ int main()
 
     VmaAllocationCreateInfo vertexAllocInfo{};
     vertexAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    vertexAllocInfo.flags = 
+    vertexAllocInfo.flags =
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | // пишем последовательно и CPU не может читать
         VMA_ALLOCATION_CREATE_MAPPED_BIT; // открыть память для прямой записи
 
@@ -377,6 +153,7 @@ int main()
     vmaGetAllocationInfo(allocator, vertexAllocation, &vertexAllocData);
     memcpy(vertexAllocData.pMappedData, vertices.data(), sizeof(Vertex) * vertices.size());
 
+    ///////////////////////
 
     VkBufferCreateInfo indexBufferCreateInfo{};
     indexBufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -387,7 +164,7 @@ int main()
 
     VmaAllocationCreateInfo indexAllocInfo{};
     indexAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    indexAllocInfo.flags = 
+    indexAllocInfo.flags =
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
         VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
@@ -500,7 +277,7 @@ int main()
     pushConstantRange.offset = 0; // отступ в этом регистре
     pushConstantRange.size = sizeof(PushConstant); // размер
     pushConstantRange.stageFlags =  // каким шейдерам позволяется читать эти данные
-        VK_SHADER_STAGE_VERTEX_BIT | 
+        VK_SHADER_STAGE_VERTEX_BIT |
         VK_SHADER_STAGE_FRAGMENT_BIT;
 
     ////////////////////////////////////
@@ -631,7 +408,7 @@ int main()
     pipelineCreateInfo.pColorBlendState = &colorBlendState;
     pipelineCreateInfo.pDynamicState = &dynamicState;
     pipelineCreateInfo.layout = scenePipelineLayout;
-    VkPipeline scenePipeline; // создание pipeline 
+    VkPipeline scenePipeline; // создание pipeline
     if (vkCreateGraphicsPipelines(
         deviceHandle,
         VK_NULL_HANDLE,
@@ -764,9 +541,9 @@ int main()
         PushConstant pushConstant{};
         pushConstant.time = time;
         pushConstant.transform = glm::rotate(
-                glm::mat4(1.0f),
-                time,
-                glm::vec3(0.0f, 0.0f, 1.0f));
+            glm::mat4(1.0f),
+            time,
+            glm::vec3(0.0f, 0.0f, 1.0f));
 
         vkCmdPushConstants(
             commandBuffer,
@@ -920,8 +697,7 @@ int main()
     vkDestroySwapchainKHR(deviceHandle, swapchain, nullptr);
     vmaDestroyAllocator(allocator);
     vkDestroyDevice(deviceHandle, nullptr);
-    vkDestroySurfaceKHR(instance, surface, nullptr);
-    vkDestroyInstance(instance, nullptr);
+    VulkanInterface::Shutdown();
 
     glfwDestroyWindow(window);
     glfwTerminate();
