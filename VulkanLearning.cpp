@@ -1,4 +1,4 @@
-﻿
+
 #include "VulkanInterface.h"
 
 struct Vertex
@@ -16,7 +16,6 @@ struct PushConstant
 int main()
 {
     glfwInit();
-
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
     GLFWwindow* window = glfwCreateWindow(1280, 720, "Vulkan", nullptr, nullptr); // создали окно
@@ -58,8 +57,7 @@ int main()
     const char* deviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME }; // запрос на конкретно отрисовку пикселей на экране
     CD.SetEnabledExtensions(deviceExtensions, 1);
     CD.ApplyPrioritys();
-    VkDevice deviceHandle = CD.CreateDevice();
-    VmaAllocator allocator = CD.CreateAllocator();
+    auto [deviceHandle, allocator] = CD.Create();
 
     VkQueue graphicsQueue = VulkanInterface::CreateQueue(deviceHandle, graphicsQueueFamily); // наша графическая очередь (будем отправлять команды через нее)
     VkSurfaceCapabilitiesKHR surfaceCapabilities = VulkanInterface::CreateSurfaceCapabilities(physicalDevice, VulkanInterface::mainSurface); // возможности работы с монитором (min и max разрешение и поддерживоемое кол-во буфферов)
@@ -131,144 +129,39 @@ int main()
         0,3,4
     };
 
-    VkBufferCreateInfo vertexBufferCreateInfo{};
-    vertexBufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    vertexBufferCreateInfo.size = sizeof(Vertex) * vertices.size();
-    vertexBufferCreateInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    vertexBufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    VmaAllocationCreateInfo vertexAllocInfo{};
-    vertexAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    vertexAllocInfo.flags =
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | // пишем последовательно и CPU не может читать
-        VMA_ALLOCATION_CREATE_MAPPED_BIT; // открыть память для прямой записи
-
-    VkBuffer vertexBuffer;
-    VmaAllocation vertexAllocation; // просто handl выделенной памяти
-    if (vmaCreateBuffer(allocator, &vertexBufferCreateInfo, &vertexAllocInfo,
-        &vertexBuffer, &vertexAllocation, nullptr) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create vertex buffer via VMA");
-    }
-    VmaAllocationInfo vertexAllocData; // конкретные данные выделенной памяти
-    vmaGetAllocationInfo(allocator, vertexAllocation, &vertexAllocData);
-    memcpy(vertexAllocData.pMappedData, vertices.data(), sizeof(Vertex) * vertices.size());
-
-    ///////////////////////
-
-    VkBufferCreateInfo indexBufferCreateInfo{};
-    indexBufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    indexBufferCreateInfo.size = sizeof(uint32_t) * indices.size();
-    indexBufferCreateInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-    indexBufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-
-    VmaAllocationCreateInfo indexAllocInfo{};
-    indexAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    indexAllocInfo.flags =
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-        VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-    VkBuffer indexBuffer;
-    VmaAllocation indexAllocation;
-    if (vmaCreateBuffer(allocator, &indexBufferCreateInfo, &indexAllocInfo,
-        &indexBuffer, &indexAllocation, nullptr) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create index buffer via VMA");
-    }
-    VmaAllocationInfo indexAllocData;
-    vmaGetAllocationInfo(allocator, indexAllocation, &indexAllocData);
-    memcpy(indexAllocData.pMappedData, indices.data(), sizeof(uint32_t) * indices.size());
+    VulkanInterfaceCreateBuffer createBuffer(sizeof(Vertex) * vertices.size());
+    auto [vertexBuffer, vertexAllocation] = createBuffer.Create(vertices.data(), sizeof(Vertex) * vertices.size(), allocator);
+    createBuffer.NewBuffer(sizeof(uint32_t) * indices.size());
+    auto [indexBuffer, indexAllocation] = createBuffer.Create(indices.data(), sizeof(uint32_t) * indices.size(), allocator);
 
     //////////////////////////////
     //  Загрузка кода шейдеров  //
     //////////////////////////////
-    auto vertexShaderCode = ReadBinary("C:\\all\\proj\\VisualStudio\\VulkanLearning\\shaders\\scene.vert.spv");
-    auto fragmentShaderCode = ReadBinary("C:\\all\\proj\\VisualStudio\\VulkanLearning\\shaders\\scene.frag.spv");
 
-    VkShaderModuleCreateInfo shaderModuleCreateInfo{};
-    shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shaderModuleCreateInfo.codeSize = vertexShaderCode.size();
-    shaderModuleCreateInfo.pCode = reinterpret_cast<
-        const uint32_t*>(vertexShaderCode.data());
-
-    VkShaderModule sceneVertexShader;
-    vkCreateShaderModule(deviceHandle, &shaderModuleCreateInfo, nullptr, &sceneVertexShader);
-
-    shaderModuleCreateInfo.codeSize = fragmentShaderCode.size();
-    shaderModuleCreateInfo.pCode = reinterpret_cast
-        <const uint32_t*>(fragmentShaderCode.data());
-
-    VkShaderModule sceneFragmentShader;
-    vkCreateShaderModule(deviceHandle, &shaderModuleCreateInfo, nullptr, &sceneFragmentShader);
-
-
-    auto screenVertexShaderCode = ReadBinary("C:\\all\\proj\\VisualStudio\\VulkanLearning\\shaders\\screen.vert.spv");
-    auto screenFragmentShaderCode = ReadBinary("C:\\all\\proj\\VisualStudio\\VulkanLearning\\shaders\\screen.frag.spv");
-
-    shaderModuleCreateInfo.codeSize = screenVertexShaderCode.size();
-    shaderModuleCreateInfo.pCode = reinterpret_cast<
-        const uint32_t*>(screenVertexShaderCode.data());
-
-    VkShaderModule screenVertexShader;
-    vkCreateShaderModule(deviceHandle, &shaderModuleCreateInfo, nullptr, &screenVertexShader);
-
-    shaderModuleCreateInfo.codeSize = screenFragmentShaderCode.size();
-    shaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t*>(
-        screenFragmentShaderCode.data());
-
-    VkShaderModule screenFragmentShader;
-    vkCreateShaderModule(deviceHandle, &shaderModuleCreateInfo, nullptr, &screenFragmentShader);
+    VkShaderModule sceneVertexShader = VulkanInterface::LoadShader("C:\\all\\proj\\VisualStudio\\VulkanLearning\\shaders\\scene.vert.spv", deviceHandle);
+    VkShaderModule sceneFragmentShader = VulkanInterface::LoadShader("C:\\all\\proj\\VisualStudio\\VulkanLearning\\shaders\\scene.frag.spv", deviceHandle);
+    VkShaderModule screenVertexShader = VulkanInterface::LoadShader("C:\\all\\proj\\VisualStudio\\VulkanLearning\\shaders\\screen.vert.spv", deviceHandle);
+    VkShaderModule screenFragmentShader = VulkanInterface::LoadShader("C:\\all\\proj\\VisualStudio\\VulkanLearning\\shaders\\screen.frag.spv", deviceHandle);
 
     //////////////////////////////////
     // Биндим картинку в descriptor //
     //////////////////////////////////
 
-    /////////////// Дескриптор для чтения данных шейдером
-    VkDescriptorSetLayoutBinding samplerBinding{}; // описание одного слота
-    samplerBinding.binding = 0;
-    samplerBinding.descriptorCount = 1;
-    samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo{};
-    descriptorSetLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    descriptorSetLayoutCreateInfo.bindingCount = 1;
-    descriptorSetLayoutCreateInfo.pBindings = &samplerBinding;
-    VkDescriptorSetLayout descriptorSetLayout; // штука описывает одно поле layout
-    vkCreateDescriptorSetLayout(deviceHandle, &descriptorSetLayoutCreateInfo, nullptr, &descriptorSetLayout);
+    VulkanInterfaceCreateDescriptorSetLayout createDescriptorSetLayout{ 1 };
+    createDescriptorSetLayout.FillBindings();
+    VkDescriptorSetLayout descriptorSetLayout = createDescriptorSetLayout.Create(deviceHandle);
 
-    VkDescriptorPoolSize descriptorPoolSize{};
-    descriptorPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    descriptorPoolSize.descriptorCount = 1;
-    VkDescriptorPoolCreateInfo descriptorPoolCreateInfo{};
-    descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    descriptorPoolCreateInfo.maxSets = 1;
-    descriptorPoolCreateInfo.poolSizeCount = 1;
-    descriptorPoolCreateInfo.pPoolSizes = &descriptorPoolSize;
-    VkDescriptorPool descriptorPool; // место для каждого layout (VkDescriptorSetLayout)
-    vkCreateDescriptorPool(deviceHandle, &descriptorPoolCreateInfo, nullptr, &descriptorPool);
+    VulkanInterfaceCreateDescriptorPool createDescriptorPool;
+    createDescriptorPool.FillDescriptionPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1);
+    VkDescriptorPool descriptorPool = createDescriptorPool.Create(deviceHandle);
 
-    VkDescriptorSetAllocateInfo descriptorAllocateInfo{};
-    descriptorAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    descriptorAllocateInfo.descriptorPool = descriptorPool;
-    descriptorAllocateInfo.descriptorSetCount = 1;
-    descriptorAllocateInfo.pSetLayouts = &descriptorSetLayout;
-    VkDescriptorSet descriptorSet; // объединяет контейнер и все описания layout'ов
-    vkAllocateDescriptorSets(deviceHandle, &descriptorAllocateInfo, &descriptorSet);
+    VulkanInterfaceCreateDescriptorSet createDescriptorSet(descriptorPool, &descriptorSetLayout);
+    VkDescriptorSet descriptorSet = createDescriptorSet.CreateOne(deviceHandle);
 
-
-    /////////////// Дескриптор для записи данных в поле
-    VkDescriptorImageInfo descriptorImageInfo{};
-    descriptorImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    descriptorImageInfo.imageView = offscreenImageView;
-    descriptorImageInfo.sampler = offscreenSampler;
-    VkWriteDescriptorSet writeDescriptorSet{}; // штука для связывания данных с местом в шейдере
-    writeDescriptorSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writeDescriptorSet.dstSet = descriptorSet;       // 1. Куда пишем? В нашу пустую коробочку-сет
-    writeDescriptorSet.dstBinding = 0;               // 2. В какую розетку пишем? В биндинг №0
-    writeDescriptorSet.dstArrayElement = 0;          // 3. С какого элемента массива начать? С нулевого
-    writeDescriptorSet.descriptorCount = 1;          // 4. Сколько розеток заполняем за раз? Одну
-    writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; // 5. Тип того, что вставляем
-    writeDescriptorSet.pImageInfo = &descriptorImageInfo; // 6. Ссылка на саму текстуру и её сглаживатель
-    vkUpdateDescriptorSets(deviceHandle, 1, &writeDescriptorSet, 0, nullptr);
+    VulkanInterfaceWriteDescriptorSet writeDescriptorSet(1, 0, 0, 1, 0);
+    writeDescriptorSet.FillDescriptorImageInfo(0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, offscreenImageView, offscreenSampler);
+    writeDescriptorSet.FillDescriptorSet(0, descriptorSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, 0, 1);
+    writeDescriptorSet.Update(deviceHandle);
 
     /////////////////////////////////////
     // создаем быструю передачу данных //
@@ -283,162 +176,45 @@ int main()
     ////////////////////////////////////
     //  Создание конвеера рендеринга  //
     ////////////////////////////////////
-    VkPipelineLayoutCreateInfo scenePipelineLayoutCreateInfo{}; // первый конвеер, кладем данные нужные для этапа
-    scenePipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    scenePipelineLayoutCreateInfo.pushConstantRangeCount = 1;
-    scenePipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
-    VkPipelineLayout scenePipelineLayout;                                                                                                   // VkPipelineLayout (определяет ресурсы \ пуш константы и дэскрипторы)
-    vkCreatePipelineLayout(deviceHandle, &scenePipelineLayoutCreateInfo, nullptr, &scenePipelineLayout);
 
-    VkPipelineLayoutCreateInfo screenPipelineLayoutCreateInfo{}; // второй конвеер
-    screenPipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    screenPipelineLayoutCreateInfo.setLayoutCount = 1;
-    screenPipelineLayoutCreateInfo.pSetLayouts = &descriptorSetLayout;
-    VkPipelineLayout screenPipelineLayout;                                                                                                  // VkPipelineLayout (ресурсы для стадии \ дескрипторы, пуши и тд)
-    vkCreatePipelineLayout(deviceHandle, &screenPipelineLayoutCreateInfo, nullptr, &screenPipelineLayout);
+    VulkanInterfaceCreatePipeline createPipeline(2, 1, 2, 1, 1, 1, 2); // мейби передавать топологию
+    createPipeline.SetPushConstants(&pushConstantRange, 1);
 
-    VkPipelineShaderStageCreateInfo shaderStages[2]{}; // указываем стадии рендеринга                                                       // VkPipelineShaderStageCreateInfo (работа на стадии шейдеров \ передача констант, точки входа, тип)
-    shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    shaderStages[0].module = sceneVertexShader;
-    shaderStages[0].pName = "main";
-    shaderStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    shaderStages[1].module = sceneFragmentShader;
-    shaderStages[1].pName = "main";
+    createPipeline.FillShaderStage(0, sceneVertexShader, VK_SHADER_STAGE_VERTEX_BIT);
+    createPipeline.FillShaderStage(1, sceneFragmentShader, VK_SHADER_STAGE_FRAGMENT_BIT);
 
-    VkVertexInputBindingDescription binding{}; // с каким шагом читать
-    binding.binding = 0; // номер аппаратного слота
-    binding.stride = sizeof(Vertex); // размер одной вершины
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    createPipeline.FillBinding(0, 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX);
+    createPipeline.FillAttribute(0, 0, 0, offsetof(Vertex, position), VK_FORMAT_R32G32_SFLOAT);
+    createPipeline.FillAttribute(1, 0, 1, offsetof(Vertex, color), VK_FORMAT_R32G32B32_SFLOAT);
+    
+    createPipeline.FillViewport(0, extent);
+    createPipeline.FillScissor(0, extent);
+    
+    // Нужна функция под заполненеи rasterizer и multisampling
 
-    VkVertexInputAttributeDescription attributes[2]{}; // описывает каждую часть вершины и подвязывает к слотам шейдера
-    // Атрибут 0: Позиция
-    attributes[0].binding = 0;
-    attributes[0].location = 0;
-    attributes[0].format = VK_FORMAT_R32G32_SFLOAT;
-    attributes[0].offset = offsetof(Vertex, position);
-    // Атрибут 1: Цвет
-    attributes[1].binding = 0;
-    attributes[1].location = 1;
-    attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributes[1].offset = offsetof(Vertex, color);
+    createPipeline.FillBlendAttachment(0);
 
-    VkPipelineVertexInputStateCreateInfo vertexInputState{}; // настраиваем все параметры и данные к шейдеру                                // VkPipelineVertexInputStateCreateInfo (че делать с вершинами \ шаги, типы переменных, к каким слотам биндить)
-    vertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputState.vertexBindingDescriptionCount = 1;
-    vertexInputState.pVertexBindingDescriptions = &binding;
-    vertexInputState.vertexAttributeDescriptionCount = 2;
-    vertexInputState.pVertexAttributeDescriptions = attributes;
+    createPipeline.dynamicStates[0] = VK_DYNAMIC_STATE_VIEWPORT;
+    createPipeline.dynamicStates[1] = VK_DYNAMIC_STATE_SCISSOR;
 
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};                                                                                 // VkPipelineInputAssemblyStateCreateInfo (как собирать примитивы \ какая геометрия будет на выходе)
-    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; // в какую геометрию собираем
+    createPipeline.SetRenderingInfoFormats(&surfaceFormat.format, 1);
+
+    auto [scenePipelineLayout, scenePipeline] = createPipeline.Create(deviceHandle);
 
 
-    VkViewport viewport{}; // берем область для отрисовки
-    viewport.width = static_cast<float>(extent.width);
-    viewport.height = static_cast<float>(extent.height);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
 
-    VkRect2D scissor{};
-    scissor.extent = extent;
+    createPipeline.SetPushConstants(nullptr, 0);
+    createPipeline.SetDescriptorSetLayouts(&descriptorSetLayout, 1);
 
-    VkPipelineViewportStateCreateInfo viewportState{};                                                                                      // VkPipelineViewportStateCreateInfo (говорит с каким пространством и какого размера работаем \ Viewport - задает трансформацию NDC -> экранные координаты, Scisor - обрезает растеризацию)
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.pViewports = &viewport;
-    viewportState.scissorCount = 1;
-    viewportState.pScissors = &scissor;
+    createPipeline.FillShaderStage(0, screenVertexShader, VK_SHADER_STAGE_VERTEX_BIT);
+    createPipeline.FillShaderStage(1, screenFragmentShader, VK_SHADER_STAGE_FRAGMENT_BIT);
 
-    VkPipelineRasterizationStateCreateInfo rasterizer{}; // правила отрисовки                                                               // VkPipelineRasterizationStateCreateInfo ( говорит правила растеризации)
-    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_NONE; // когда показывать грань
-    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; // когда считать что грань повернута лицом
+    createPipeline.ResizeAttributes(0);
+    createPipeline.ResizeBindings(0);
 
-    VkPipelineMultisampleStateCreateInfo multisampling{}; // сглаживание геометрии                                                          // VkPipelineMultisampleStateCreateInfo (MSAA)
-    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; // отрисовывать честно пиксель
+    auto [screenPipelineLayout, screenPipeline] = createPipeline.Create(deviceHandle);
 
-    // VkPipelineDepthStencilStateCreateInfo ()
-
-    VkPipelineColorBlendAttachmentState blendAttachment{}; // решает что делать с наложением                                                // VkPipelineColorBlendAttachmentState (блендинг (один на каждый атачмент?))
-    blendAttachment.colorWriteMask = // дает доступ к перезаписи каналов
-        VK_COLOR_COMPONENT_R_BIT |
-        VK_COLOR_COMPONENT_G_BIT |
-        VK_COLOR_COMPONENT_B_BIT |
-        VK_COLOR_COMPONENT_A_BIT;
-    blendAttachment.blendEnable = VK_FALSE; // смешивание цветов
-
-    VkPipelineColorBlendStateCreateInfo colorBlendState{};                                                                                  // VkPipelineColorBlendStateCreateInfo ()
-    colorBlendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlendState.logicOpEnable = VK_FALSE; // логические попиксельные операции
-    colorBlendState.attachmentCount = 1; // настройка цвета только для одной текстуры
-    colorBlendState.pAttachments = &blendAttachment;
-
-    VkDynamicState dynamicStates[] = // подключаемые динамические фичи
-    {
-        VK_DYNAMIC_STATE_VIEWPORT,
-        VK_DYNAMIC_STATE_SCISSOR
-    };
-    VkPipelineDynamicStateCreateInfo dynamicState{}; // динамические состояния, которые придеться передавать в цикле                        // VkPipelineDynamicStateCreateInfo (что вынести в runtime)
-    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = 2;
-    dynamicState.pDynamicStates = dynamicStates;
-
-    VkPipelineRenderingCreateInfo renderingInfo{};                                                                                          // ?
-    renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachmentFormats = &surfaceFormat.format; // данные о цветовой политре surface
-
-    // есть еще VkComputePipelineCreateInfo
-    VkGraphicsPipelineCreateInfo pipelineCreateInfo{};                                                                                      // VkGraphicsPipelineCreateInfo (собирает все в один pipeline \ можно указать от какого pipeline отталкиваться при компиляции)
-    pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineCreateInfo.pNext = &renderingInfo;
-    pipelineCreateInfo.stageCount = 2; // бедет задействованы два шейдера
-    pipelineCreateInfo.pStages = shaderStages; // шейдеры
-    pipelineCreateInfo.pVertexInputState = &vertexInputState;
-    pipelineCreateInfo.pInputAssemblyState = &inputAssembly;
-    pipelineCreateInfo.pViewportState = &viewportState;
-    pipelineCreateInfo.pRasterizationState = &rasterizer;
-    pipelineCreateInfo.pMultisampleState = &multisampling;
-    pipelineCreateInfo.pColorBlendState = &colorBlendState;
-    pipelineCreateInfo.pDynamicState = &dynamicState;
-    pipelineCreateInfo.layout = scenePipelineLayout;
-    VkPipeline scenePipeline; // создание pipeline
-    if (vkCreateGraphicsPipelines(
-        deviceHandle,
-        VK_NULL_HANDLE,
-        1,
-        &pipelineCreateInfo,
-        nullptr,
-        &scenePipeline) != VK_SUCCESS)
-    {
-        throw std::runtime_error("Scene pipeline");
-    }
-
-    shaderStages[0].module = screenVertexShader; // меняем шейдеры под второй конвеер
-    shaderStages[1].module = screenFragmentShader;
-    VkPipelineVertexInputStateCreateInfo screenVertexInput{};
-    screenVertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    pipelineCreateInfo.pVertexInputState = &screenVertexInput;
-    pipelineCreateInfo.layout = screenPipelineLayout;
-
-    VkPipeline screenPipeline;
-    if (vkCreateGraphicsPipelines(
-        deviceHandle,
-        VK_NULL_HANDLE,
-        1,
-        &pipelineCreateInfo,
-        nullptr,
-        &screenPipeline) != VK_SUCCESS)
-    {
-        throw std::runtime_error("Screen pipeline");
-    }
-
+    
     vkDestroyShaderModule(deviceHandle, sceneVertexShader, nullptr);
     vkDestroyShaderModule(deviceHandle, sceneFragmentShader, nullptr);
     vkDestroyShaderModule(deviceHandle, screenVertexShader, nullptr);
