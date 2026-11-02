@@ -1,4 +1,4 @@
-﻿
+
 
 // важно подключать после glfw
 
@@ -92,7 +92,7 @@ public:
     static std::vector<VkPhysicalDevice> GetDevices();
     static std::vector<VkQueueFamilyProperties> GetDeviceQueueFamilys(VkPhysicalDevice& physicalDevices);
     static VkQueue CreateQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex = 0);
-    static void LoadShader(std::string& path, VkShaderModule& shader, VkDevice& deviceHandle);
+    static VkShaderModule LoadShader(std::string path, VkDevice& device, const VkAllocationCallbacks* pAllocator = nullptr);
 
     inline static VkInstance instance;
     inline static VkSurfaceKHR mainSurface;
@@ -153,6 +153,12 @@ public:
         deviceCreateInfo.pQueueCreateInfos = queueCreateInfo.data();
         deviceCreateInfo.enabledExtensionCount = 0;
 
+        vulkanFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+        vulkanFunctions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+
+        allocatorCreateInfo.instance = VulkanInterface::instance;
+        allocatorCreateInfo.physicalDevice = _physicalDevice;
+        allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions; // Связываем volk и VMA
         allocatorCreateInfo.vulkanApiVersion = VK_API_VERSION_1_3;
     }
     // TODO: Создать удобный заполнитель для queueCreateInfo
@@ -186,31 +192,21 @@ public:
         for (int i = 0; i < deviceCreateInfo.queueCreateInfoCount; i++)
             queueCreateInfo[i].pQueuePriorities = prioritys[i].data();
     }
-    VkDevice CreateDevice(const VkAllocationCallbacks* pAllocator = nullptr)
+    std::tuple<VkDevice, VmaAllocator> Create(const VkAllocationCallbacks* pAllocator = nullptr)
     {
         VkDevice deviceHandle;
         if (vkCreateDevice(_physicalDevice, &deviceCreateInfo, pAllocator, &deviceHandle) != VK_SUCCESS)
             throw std::runtime_error("vkCreateDevice");
         volkLoadDevice(deviceHandle); // загрузили прямые и самые быстрые укащатели для конкретно этой карты
 
-        vulkanFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
-        vulkanFunctions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
-
-        allocatorCreateInfo.instance = VulkanInterface::instance;
-        allocatorCreateInfo.physicalDevice = _physicalDevice;
         allocatorCreateInfo.device = deviceHandle;
-        allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions; // Связываем volk и VMA
-        allocatorCreateInfo.pAllocationCallbacks = pAllocator;
+        //allocatorCreateInfo.pAllocationCallbacks = pAllocator;
 
-        return deviceHandle;
-    }
-    VmaAllocator CreateAllocator()
-    {
         VmaAllocator allocator;
         if (vmaCreateAllocator(&allocatorCreateInfo, &allocator) != VK_SUCCESS)
             throw std::runtime_error("Failed to create VMA allocator");
 
-        return allocator;
+        return std::tuple<VkDevice, VmaAllocator>(deviceHandle, allocator);
     }
 
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfo;
@@ -449,6 +445,959 @@ public:
     VkSamplerCreateInfo samplerCreateInfo{};
 };
 
+class VulkanInterfaceCreateBuffer
+{
+public:
+    VulkanInterfaceCreateBuffer(VkDeviceSize byteSize, VkBufferUsageFlags usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VmaAllocationCreateFlags allocFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT)
+    //                                        пишем последовательно и CPU не может читать              открыть память для прямой записи
+    {
+        bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferCreateInfo.size = byteSize;
+        bufferCreateInfo.usage = usage;
+        bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        allocationInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        allocationInfo.flags = allocFlags;
+    }
+
+    std::tuple<VkBuffer, VmaAllocation> Create(const void* data, size_t dataSize, VmaAllocator& allocator)
+    {
+        VmaAllocationInfo pAllocationInfo{};
+        VkBuffer vertexBuffer;
+        VmaAllocation vertexAllocation; // просто handl выделенной памяти
+        if (vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationInfo,
+            &vertexBuffer, &vertexAllocation, &pAllocationInfo) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create vertex buffer via VMA");
+        }
+
+        if (pAllocationInfo.pMappedData != nullptr)
+        {
+            VmaAllocationInfo vertexAllocData; // конкретные данные выделенной памяти
+            vmaGetAllocationInfo(allocator, vertexAllocation, &vertexAllocData);
+            memcpy(vertexAllocData.pMappedData, data, dataSize);
+        }
+        else
+        {
+            void* pData;
+            vmaMapMemory(allocator, vertexAllocation, &pData);
+            memcpy(pData, data, dataSize);
+            vmaUnmapMemory(allocator, vertexAllocation);
+        }
+        return std::tuple<VkBuffer, VmaAllocation>(vertexBuffer, vertexAllocation);
+    }
+    std::tuple<VkBuffer, VmaAllocation> Create(const void* data, size_t dataSize, VmaAllocator& allocator,
+        VmaAllocationInfo* pAllocationInfo)
+    {
+        VkBuffer vertexBuffer;
+        VmaAllocation vertexAllocation; // просто handl выделенной памяти
+        if (vmaCreateBuffer(allocator, &bufferCreateInfo, &allocationInfo,
+            &vertexBuffer, &vertexAllocation, pAllocationInfo) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create vertex buffer via VMA");
+        }
+        assert(pAllocationInfo != nullptr);
+        if (pAllocationInfo->pMappedData != nullptr)
+        {
+            VmaAllocationInfo vertexAllocData; // конкретные данные выделенной памяти
+            vmaGetAllocationInfo(allocator, vertexAllocation, &vertexAllocData);
+            memcpy(vertexAllocData.pMappedData, data, dataSize);
+        }
+        else
+        {
+            void* pData;
+            vmaMapMemory(allocator, vertexAllocation, &pData);
+            memcpy(pData, data, dataSize);
+            vmaUnmapMemory(allocator, vertexAllocation);
+        }
+        return std::tuple<VkBuffer, VmaAllocation>(vertexBuffer, vertexAllocation);
+    }
+
+    inline void NewBuffer(VkDeviceSize byteSize, VkBufferUsageFlags usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT)
+    {
+        bufferCreateInfo.usage = usage;
+        bufferCreateInfo.size = byteSize;
+    }
+
+    VkBufferCreateInfo bufferCreateInfo{};
+    VmaAllocationCreateInfo allocationInfo{};
+};
+
+// Говорит как группировать биндинги (сгруппированные биндинги - сеты)
+class VulkanInterfaceCreateDescriptorSetLayout
+{
+public:
+    VulkanInterfaceCreateDescriptorSetLayout(uint32_t bindingCount = 1)
+        : bindings(1, {})
+    {
+        descriptorSetLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        descriptorSetLayoutCreateInfo.bindingCount = bindingCount;
+        descriptorSetLayoutCreateInfo.pBindings = bindings.data();
+    }
+
+    template <typename ...Args>
+    inline void FillBindings(uint32_t binding = 0, uint32_t descriptorCount = 1, 
+        VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 
+        VkShaderStageFlags stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        Args... args)
+    {
+        _FillBindings(0, binding, descriptorCount, descriptorType, stageFlags, args...);
+    }
+
+    VkDescriptorSetLayout Create(VkDevice& device, const VkAllocationCallbacks* pAllocator = nullptr)
+    {
+        VkDescriptorSetLayout descriptorSetLayout; // описывает один set
+        vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo, pAllocator, &descriptorSetLayout);
+        return descriptorSetLayout;
+    }
+
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo{};
+
+private:
+     
+    template <typename ...Args>
+    void _FillBindings(uint32_t Idx, uint32_t binding, uint32_t descriptorCount,
+        VkDescriptorType descriptorType, VkShaderStageFlags stageFlags,
+        Args... args)
+    {
+        bindings[Idx].binding = binding;
+        bindings[Idx].descriptorCount = descriptorCount;
+        bindings[Idx].descriptorType = descriptorType;
+        bindings[Idx].stageFlags = stageFlags;
+        if constexpr (sizeof...(args) > 0)
+        {
+            FillBindings(Idx + 1, args...);
+        }
+    }
+};
+// TODO: Найти хуйню где два pAllocator типо от него зависит какой-то там механизм выделения автоматической или ручной памяти 
+// Говорит сколько и какого типа выделять эти самые биндинги и сколько максимум сетов
+class VulkanInterfaceCreateDescriptorPool
+{
+public:
+    VulkanInterfaceCreateDescriptorPool(uint32_t maxSets=1, uint32_t descriptorPoolSizeCount = 1)
+        : descriptorPoolSizes(descriptorPoolSizeCount, {})
+    {
+        descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        descriptorPoolCreateInfo.maxSets = maxSets;
+        descriptorPoolCreateInfo.poolSizeCount = descriptorPoolSizes.size();
+        descriptorPoolCreateInfo.pPoolSizes = descriptorPoolSizes.data();
+    }
+
+    template<typename... DescriptiorPoolSizes>
+    void FillDescriptionPoolSize(DescriptiorPoolSizes... PoolSizes)
+    {
+        if constexpr (sizeof...(PoolSizes) > 0)
+            _FillDescriptionPoolSize(0, PoolSizes...);
+    }
+
+    template<typename... DescriptiorPoolSizes>
+    void FillDescriptionPoolSize(uint32_t startIdx, DescriptiorPoolSizes... PoolSizes)
+    {
+        if constexpr (sizeof...(PoolSizes) > 0)
+            _FillDescriptionPoolSize(startIdx, PoolSizes...);
+    }
+
+    VkDescriptorPool Create(VkDevice& device, const VkAllocationCallbacks* pAllocator = nullptr)
+    {
+        VkDescriptorPool descriptorPool;
+        vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, pAllocator, &descriptorPool);
+        return descriptorPool;
+    }
+
+    std::vector<VkDescriptorPoolSize> descriptorPoolSizes;
+    VkDescriptorPoolCreateInfo descriptorPoolCreateInfo{};
+private:
+    template<typename... DescriptiorPoolSizes>
+    void _FillDescriptionPoolSize(uint32_t idx, VkDescriptorType dType, uint32_t dCount, 
+        DescriptiorPoolSizes... PoolSizes)
+    {
+        descriptorPoolSizes[idx].type = dType;
+        descriptorPoolSizes[idx].descriptorCount = dCount;
+        if constexpr (sizeof...(PoolSizes) > 0)
+        {
+            _FillDescriptionPoolSize(idx+1, PoolSizes...);
+        }
+    }
+};
+
+class VulkanInterfaceCreateDescriptorSet
+{
+public:
+    VulkanInterfaceCreateDescriptorSet(VkDescriptorPool& pool, VkDescriptorSetLayout* setLayouts, uint32_t layoutCount=1)
+    {
+        descriptorAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        descriptorAllocateInfo.descriptorPool = pool;
+        descriptorAllocateInfo.descriptorSetCount = layoutCount;
+        descriptorAllocateInfo.pSetLayouts = setLayouts;
+    }
+
+    std::vector<VkDescriptorSet> Create(VkDevice& device)
+    {
+        std::vector<VkDescriptorSet> descriptorSet(descriptorAllocateInfo.descriptorSetCount); // объединяет контейнер и все описания layout'ов
+        vkAllocateDescriptorSets(device, &descriptorAllocateInfo, descriptorSet.data());
+        return descriptorSet;
+    }
+
+    // Only if descriptorSetCount == 1
+    VkDescriptorSet CreateOne(VkDevice& device)
+    {
+        assert(descriptorAllocateInfo.descriptorSetCount == 1);
+        VkDescriptorSet descriptorSet; // объединяет контейнер и все описания layout'ов
+        vkAllocateDescriptorSets(device, &descriptorAllocateInfo, &descriptorSet);
+        return descriptorSet;
+    }
+    
+    VkDescriptorSetAllocateInfo descriptorAllocateInfo{};
+};
+// TODO: Спросить про шаблоны и лучше давать аргументы в первой функции или только в приватной? И вообще спросить про аргументы в этой хуйне
+class VulkanInterfaceWriteDescriptorSet
+{ 
+public:
+    VulkanInterfaceWriteDescriptorSet(uint32_t imageInfoCount, uint32_t bufferInfoCount, uint32_t texelBufferViewCount,
+        uint32_t writeDescriptorCount, uint32_t copyDescriptorCount = 0)
+        : imageInfo(imageInfoCount, {}), bufferInfo(bufferInfoCount, {}), texelBufferView(texelBufferViewCount, {}),
+        writeDescriptorSets(writeDescriptorCount, {}), copyDescriptorSets(copyDescriptorCount, {})
+    {
+    }
+
+    void FillDescriptorImageInfo(uint32_t idx, VkImageLayout layout, VkImageView view, VkSampler sampler)
+    {
+        imageInfo[idx].imageLayout = layout;
+        imageInfo[idx].imageView = view;
+        imageInfo[idx].sampler = sampler;
+    }
+
+    void FillDescriptorBufferInfo(uint32_t idx, VkBuffer& buffer, VkDeviceSize offset, VkDeviceSize range)
+    {
+        bufferInfo[idx].buffer = buffer;
+        bufferInfo[idx].offset = offset;
+        bufferInfo[idx].range = range;
+    }
+
+    void FillDescriptorSet(uint32_t idx, VkDescriptorSet& set, VkDescriptorType dType,
+        uint32_t binding = 0, uint32_t startArrayIdx = 0, uint32_t descriptorCount = 1,
+        uint32_t imageInfoOffset = 0, uint32_t bufferInfooffset = 0, uint32_t texelBufferViewOffset = 0)
+    {
+        writeDescriptorSets[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writeDescriptorSets[idx].dstSet = set;                 // 1. Куда пишем? В нашу пустую коробочку-сет
+        writeDescriptorSets[idx].dstBinding = binding;         // 2. В какую розетку пишем? В биндинг №0
+        writeDescriptorSets[idx].dstArrayElement = startArrayIdx;          // 3. С какого элемента массива начать? С нулевого
+        writeDescriptorSets[idx].descriptorCount = descriptorCount;          // 4. Сколько розеток заполняем за раз? Одну
+        writeDescriptorSets[idx].descriptorType = dType;       // 5. Тип того, что вставляем
+        writeDescriptorSets[idx].pImageInfo = imageInfo.data() + imageInfoOffset; // 6. Ссылка на саму текстуру и её сглаживатель
+        writeDescriptorSets[idx].pBufferInfo = bufferInfo.data() + bufferInfooffset;
+        writeDescriptorSets[idx].pTexelBufferView = texelBufferView.data() + texelBufferViewOffset;
+    }
+
+    void FillCopyDescriptorSet(uint32_t idx,
+        VkDescriptorSet& srcSet, uint32_t srcBinding, uint32_t srcArrayIdx,          // если копируем массив то выбираем сколько элементов
+        VkDescriptorSet& dstSet, uint32_t dstBinding, uint32_t dstArrayIdx, uint32_t descriptorCount)
+    {
+        copyDescriptorSets[idx].sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+        copyDescriptorSets[idx].srcSet = srcSet;
+        copyDescriptorSets[idx].srcBinding = srcBinding;
+        copyDescriptorSets[idx].srcArrayElement = srcArrayIdx;
+        copyDescriptorSets[idx].dstSet = dstSet;
+        copyDescriptorSets[idx].dstBinding = dstBinding;
+        copyDescriptorSets[idx].dstArrayElement = dstArrayIdx;
+        copyDescriptorSets[idx].descriptorCount = descriptorCount;
+    }
+
+    inline void Update(VkDevice& device)
+    {
+        vkUpdateDescriptorSets(device, 
+            writeDescriptorSets.size(), writeDescriptorSets.data(), 
+            copyDescriptorSets.size(), copyDescriptorSets.data()
+        );
+    }
+    inline void Update(VkDevice& device, 
+        uint32_t sizeWrite, uint32_t sizeCopy)
+    {
+        vkUpdateDescriptorSets(device, 
+            sizeWrite, writeDescriptorSets.data(),
+            sizeCopy, copyDescriptorSets.data()
+        );
+    }
+    inline void Update(VkDevice& device, 
+        uint32_t sizeWrite, uint32_t sizeCopy, 
+        uint32_t offsetWrite, uint32_t offsetCopy)
+    {
+        vkUpdateDescriptorSets(device, 
+            sizeWrite, writeDescriptorSets.data() + offsetWrite,
+            sizeCopy, copyDescriptorSets.data() + offsetCopy
+        );
+    }
+
+    struct WriteDescriptorSet : public VkWriteDescriptorSet
+    {
+        WriteDescriptorSet() : VkWriteDescriptorSet{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET } {}
+    };
+    struct CopyDescriptorSet : public VkCopyDescriptorSet
+    {
+        CopyDescriptorSet() : VkCopyDescriptorSet{ VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET } {}
+    };
+    static_assert(sizeof(WriteDescriptorSet) == sizeof(VkWriteDescriptorSet));
+    static_assert(sizeof(CopyDescriptorSet) == sizeof(VkCopyDescriptorSet));
+
+    std::vector<WriteDescriptorSet> writeDescriptorSets;
+    std::vector<CopyDescriptorSet> copyDescriptorSets;
+    std::vector<VkDescriptorImageInfo> imageInfo;
+    std::vector<VkDescriptorBufferInfo> bufferInfo;
+    std::vector<VkBufferView> texelBufferView;
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// TODO: Сейчас это больште векторы с разным использованием
+        // Хочу чтобы векторы создавались под конкретный Pipeline и можно было спокойно брать data() и size() ||| и еще функции что бы скинуть отдельные части для последующих Pipeline
+
+
+class VulkanInterfaceCreatePipeline
+{
+public:
+    VulkanInterfaceCreatePipeline(VulkanInterfaceCreatePipeline&) = delete;
+    VulkanInterfaceCreatePipeline(VulkanInterfaceCreatePipeline&&) = delete;
+
+    VulkanInterfaceCreatePipeline(uint32_t shaderStagesCount, uint32_t bindingsCount, uint32_t attributesCount, 
+        uint32_t viewportsCount, uint32_t scissorsCount, uint32_t blendAttachmentsCount, uint32_t dynamicStatesCount)
+        : shaderStages(shaderStagesCount, {}), bindings(bindingsCount, {}), attributes(attributesCount, {}), 
+        viewports(viewportsCount, {}), scissors(scissorsCount, {}), 
+        blendAttachments(blendAttachmentsCount, {}), dynamicStates(dynamicStatesCount, {})
+    {
+
+        pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+
+        vertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; // в какую геометрию собираем
+
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE; // когда показывать грань
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; // когда считать что грань повернута лицом
+
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; // отрисовывать честно пиксель
+        
+        colorBlendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlendState.logicOpEnable = VK_FALSE; // логические попиксельные операции
+
+        dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+
+        renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    }
+
+    inline void SetPushConstants(VkPushConstantRange* pushConstantRanges, uint32_t count = 1)
+    {
+        pipelineLayoutCreateInfo.pushConstantRangeCount = count;
+        pipelineLayoutCreateInfo.pPushConstantRanges = pushConstantRanges;
+    }
+    inline void SetDescriptorSetLayouts(VkDescriptorSetLayout* descriptorSetLayouts, uint32_t count = 1)
+    {
+        pipelineLayoutCreateInfo.setLayoutCount = count;
+        pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts;
+    }
+
+    void FillShaderStage(uint32_t idx, VkShaderModule shaderModule, VkShaderStageFlagBits stageFlag = VK_SHADER_STAGE_VERTEX_BIT, const char* startFuncName = "main")
+    {
+        shaderStages[idx].stage = stageFlag;
+        shaderStages[idx].module = shaderModule;
+        shaderStages[idx].pName = startFuncName;
+    }
+
+    void FillBinding(uint32_t idx, uint32_t binding, uint32_t stride, VkVertexInputRate inputRate)
+    {
+        bindings[idx].binding = binding; // номер аппаратного слота
+        bindings[idx].stride = stride; // размер одной вершины
+        bindings[idx].inputRate = inputRate;
+    }
+
+    void FillAttribute(uint32_t idx, uint32_t binding, uint32_t location, uint32_t offset, VkFormat format)
+    {
+        attributes[idx].binding = binding;
+        attributes[idx].location = location;
+        attributes[idx].format = format;
+        attributes[idx].offset = offset;
+    }
+    
+    inline void FillViewport(uint32_t idx, VkExtent2D extent, float x = 0, float y = 0, float minDepth = 0.0, float maxDepth = 1.0)
+    {
+        viewports[idx].x = x;
+        viewports[idx].y = y;
+        viewports[idx].width = static_cast<float>(extent.width);
+        viewports[idx].height = static_cast<float>(extent.height);
+        viewports[idx].minDepth = minDepth;
+        viewports[idx].maxDepth = maxDepth;
+    }
+    inline void FillViewport(uint32_t idx, float width, float height, float x = 0, float y = 0, float minDepth = 0.0, float maxDepth = 1.0)
+    {
+        viewports[idx].x = x;
+        viewports[idx].y = y;
+        viewports[idx].width = width;
+        viewports[idx].height = height;
+        viewports[idx].minDepth = minDepth;
+        viewports[idx].maxDepth = maxDepth;
+    }
+    inline void FillScissor(uint32_t idx, VkExtent2D extent, VkOffset2D offset = {0, 0})
+    {
+        scissors[idx].extent = extent;
+        scissors[idx].offset = offset;
+    }
+    
+    // TODO: Чет тут с аргументами по умолчанию точно не то
+    inline void FillBlendAttachment(uint32_t idx,
+        VkBool32              blendEnable = VK_FALSE,
+        VkBlendFactor         srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+        VkBlendFactor         dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+        VkBlendOp             colorBlendOp = VK_BLEND_OP_ADD,
+        VkBlendFactor         srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        VkBlendFactor         dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        VkBlendOp             alphaBlendOp = VK_BLEND_OP_ADD,
+        VkColorComponentFlags colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+        VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT |
+        VK_COLOR_COMPONENT_A_BIT)
+    {
+        blendAttachments[idx].blendEnable = blendEnable;
+        blendAttachments[idx].srcColorBlendFactor = srcColorBlendFactor;
+        blendAttachments[idx].dstColorBlendFactor = dstColorBlendFactor;
+        blendAttachments[idx].colorBlendOp = colorBlendOp;
+        blendAttachments[idx].srcAlphaBlendFactor = srcAlphaBlendFactor;
+        blendAttachments[idx].dstAlphaBlendFactor = dstAlphaBlendFactor;
+        blendAttachments[idx].alphaBlendOp = alphaBlendOp;
+        blendAttachments[idx].colorWriteMask = colorWriteMask;
+    }
+
+    inline void SetRenderingInfoFormats(VkFormat* formats, uint32_t count)
+    {
+        renderingInfo.colorAttachmentCount = count;
+        renderingInfo.pColorAttachmentFormats = formats; // данные о цветовой политре surface
+    }
+
+    inline void FillRenderingInfo(VkFormat* formats, uint32_t count, uint32_t viewMask, 
+        VkFormat depthAttachmentFormat, VkFormat stencilAttachmentFormat)
+    {
+        renderingInfo.viewMask = viewMask;
+        renderingInfo.colorAttachmentCount = count;
+        renderingInfo.pColorAttachmentFormats = formats; // данные о цветовой политре surface
+        renderingInfo.depthAttachmentFormat = depthAttachmentFormat;
+        renderingInfo.stencilAttachmentFormat = stencilAttachmentFormat;
+    }
+
+    std::tuple<VkPipelineLayout, VkPipeline> Create(VkDevice& device, const VkAllocationCallbacks* pAllocatorPipelineLayout = nullptr,
+        const VkAllocationCallbacks* pAllocatorPipeline = nullptr, VkPipelineCache pipelineCache = VK_NULL_HANDLE)
+    {
+        VkPipelineLayout pipelineLayout;                                                                                                  // VkPipelineLayout (ресурсы для стадии \ дескрипторы, пуши и тд)
+        vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, pAllocatorPipelineLayout, &pipelineLayout);
+
+        viewportState.viewportCount = viewports.size();
+        viewportState.pViewports = viewports.data();
+        viewportState.scissorCount = scissors.size();
+        viewportState.pScissors = scissors.data();
+
+        vertexInputState.vertexBindingDescriptionCount = bindings.size();
+        vertexInputState.pVertexBindingDescriptions = bindings.data();
+        vertexInputState.vertexAttributeDescriptionCount = attributes.size();
+        vertexInputState.pVertexAttributeDescriptions = attributes.data();
+
+        colorBlendState.attachmentCount = blendAttachments.size(); // настройка цвета только для одной текстуры
+        colorBlendState.pAttachments = blendAttachments.data();
+
+        dynamicState.dynamicStateCount = dynamicStates.size();
+        dynamicState.pDynamicStates = dynamicStates.data();
+
+        // есть еще VkComputePipelineCreateInfo
+        VkGraphicsPipelineCreateInfo pipelineCreateInfo{};                                                                                      // VkGraphicsPipelineCreateInfo (собирает все в один pipeline \ можно указать от какого pipeline отталкиваться при компиляции)
+        pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO; // sType сдесь разный, может быть VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+        pipelineCreateInfo.pNext = &renderingInfo;
+        pipelineCreateInfo.stageCount = shaderStages.size(); // бедет задействованы два шейдера
+        pipelineCreateInfo.pStages = shaderStages.data(); // шейдеры
+        pipelineCreateInfo.pVertexInputState = &vertexInputState;
+        pipelineCreateInfo.pInputAssemblyState = &inputAssembly;
+        pipelineCreateInfo.pViewportState = &viewportState;
+        pipelineCreateInfo.pRasterizationState = &rasterizer;
+        pipelineCreateInfo.pMultisampleState = &multisampling;
+        pipelineCreateInfo.pColorBlendState = &colorBlendState;
+        pipelineCreateInfo.pDynamicState = &dynamicState;
+        pipelineCreateInfo.layout = pipelineLayout;
+        VkPipeline scenePipeline;
+        if (vkCreateGraphicsPipelines(
+            device,
+            pipelineCache,
+            1,
+            &pipelineCreateInfo,
+            pAllocatorPipeline,
+            &scenePipeline) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Scene pipeline not create");
+        }
+        return std::tuple<VkPipelineLayout, VkPipeline>(pipelineLayout, scenePipeline);
+    }
+
+    inline void ResizeBindings(size_t newSize)
+    {
+        bindings.resize(newSize);
+    }
+    inline void ResizeAttributes(size_t newSize)
+    {
+        attributes.resize(newSize);
+    }
+    inline void ResizeViewports(size_t newSize)
+    {
+        viewports.resize(newSize);
+    }
+    inline void ResizeScissors(size_t newSize)
+    {
+        scissors.resize(newSize);
+    }
+    inline void ResizeBlendAttachments(size_t newSize)
+    {
+        blendAttachments.resize(newSize);
+    }
+    inline void ResizeDynamicStates(size_t newSize)
+    {
+        dynamicStates.resize(newSize);
+    }
+
+    void ReInit(uint32_t shaderStagesCount, uint32_t bindingsCount, uint32_t attributesCount,
+        uint32_t viewportsCount, uint32_t scissorsCount, uint32_t blendAttachmentsCount, uint32_t dynamicStatesCount)
+    {
+
+        shaderStages.resize(shaderStagesCount);
+        bindings.resize(bindingsCount);
+        attributes.resize(attributesCount);
+        viewports.resize(viewportsCount); 
+        scissors.resize(scissorsCount);
+        blendAttachments.resize(blendAttachmentsCount);
+        dynamicStates.resize(dynamicStatesCount);
+
+
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; // в какую геометрию собираем
+
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE; // когда показывать грань
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; // когда считать что грань повернута лицом
+
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; // отрисовывать честно пиксель
+
+        colorBlendState.logicOpEnable = VK_FALSE; // логические попиксельные операции
+    }
+
+    struct PipelineShaderStageCreateInfo : public VkPipelineShaderStageCreateInfo
+    {
+        PipelineShaderStageCreateInfo() : VkPipelineShaderStageCreateInfo{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO } {}
+    };
+    static_assert(sizeof(PipelineShaderStageCreateInfo) == sizeof(VkPipelineShaderStageCreateInfo));
+
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
+    std::vector<PipelineShaderStageCreateInfo> shaderStages{};
+
+    std::vector<VkVertexInputBindingDescription> bindings{}; // с каким шагом читать
+    std::vector<VkVertexInputAttributeDescription> attributes{};
+    VkPipelineVertexInputStateCreateInfo vertexInputState{}; // настраиваем все параметры и данные к шейдеру
+    
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+
+    std::vector<VkViewport> viewports{}; // берем область для отрисовки
+    std::vector<VkRect2D> scissors{};
+    VkPipelineViewportStateCreateInfo viewportState{};
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{}; // правила отрисовки
+    VkPipelineMultisampleStateCreateInfo multisampling{}; // сглаживание геометрии
+
+    std::vector<VkPipelineColorBlendAttachmentState> blendAttachments{}; // решает что делать с наложением 
+    VkPipelineColorBlendStateCreateInfo colorBlendState{};
+
+    std::vector<VkDynamicState> dynamicStates{};
+    VkPipelineDynamicStateCreateInfo dynamicState{}; // динамические состояния, которые придеться передавать в цикле
+
+    VkPipelineRenderingCreateInfo renderingInfo{}; // pNext
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//class VulkanInterfaceCreatePipeline
+//{
+//public:
+//    // sType по умолчанию: Fill его не трогает, новые элементы после resize тоже получают его
+//    struct PipelineShaderStageCreateInfo : public VkPipelineShaderStageCreateInfo
+//    {
+//        PipelineShaderStageCreateInfo() : VkPipelineShaderStageCreateInfo{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO } {}
+//    };
+//    static_assert(sizeof(PipelineShaderStageCreateInfo) == sizeof(VkPipelineShaderStageCreateInfo));
+//
+//    // Какую часть вектора берет пайплайн: [offset, offset + count)
+//    // count = kAll: все элементы от offset до конца вектора (подстраивается под resize)
+//    struct Range
+//    {
+//        static constexpr uint32_t kAll = ~0u;
+//        constexpr Range(uint32_t c = kAll, uint32_t o = 0) : count(c), offset(o) {}
+//        uint32_t count;
+//        uint32_t offset;
+//    };
+//
+//    VulkanInterfaceCreatePipeline(VulkanInterfaceCreatePipeline&) = delete;
+//    VulkanInterfaceCreatePipeline(VulkanInterfaceCreatePipeline&&) = delete;
+//
+//    VulkanInterfaceCreatePipeline(uint32_t shaderStagesCount, uint32_t bindingsCount, uint32_t attributesCount,
+//        uint32_t viewportsCount, uint32_t scissorsCount, uint32_t blendAttachmentsCount, uint32_t dynamicStatesCount)
+//        : shaderStages(shaderStagesCount), bindings(bindingsCount), attributes(attributesCount),
+//        viewports(viewportsCount), scissors(scissorsCount), blendAttachments(blendAttachmentsCount),
+//        dynamicStates(dynamicStatesCount)
+//    {
+//        pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+//
+//        vertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+//
+//        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+//        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; // в какую геометрию собираем
+//
+//        // VkPipelineViewportStateCreateInfo (говорит с каким пространством и какого размера работаем \ Viewport - задает трансформацию NDC -> экранные координаты, Scisor - обрезает растеризацию)
+//        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+//
+//        // VkPipelineRasterizationStateCreateInfo ( говорит правила растеризации)
+//        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+//        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+//        rasterizer.lineWidth = 1.0f;
+//        rasterizer.cullMode = VK_CULL_MODE_NONE; // когда показывать грань
+//        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; // когда считать что грань повернута лицом
+//
+//        // VkPipelineMultisampleStateCreateInfo (MSAA)
+//        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+//        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; // отрисовывать честно пиксель
+//
+//        // VkPipelineColorBlendStateCreateInfo ()
+//        colorBlendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+//        colorBlendState.logicOpEnable = VK_FALSE; // логические попиксельные операции
+//
+//        dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+//
+//        renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+//
+//        // нулевая маска каналов означает "ничего не пишется", поэтому слоты сразу получают значения по умолчанию
+//        for (uint32_t i = 0; i < blendAttachmentsCount; ++i)
+//            FillBlendAttachment(i);
+//    }
+//
+//    inline void SetPushConstants(VkPushConstantRange* pushConstantRanges, uint32_t count = 1)
+//    {
+//        pipelineLayoutCreateInfo.pushConstantRangeCount = count;
+//        pipelineLayoutCreateInfo.pPushConstantRanges = pushConstantRanges;
+//    }
+//
+//    inline void SetPushConstants(VkDescriptorSetLayout* descriptorSetLayouts, uint32_t count = 1)
+//    {
+//        pipelineLayoutCreateInfo.setLayoutCount = count;
+//        pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts;
+//    }
+//
+//    void FillShaderStage(uint32_t idx, VkShaderModule& shaderModule, VkShaderStageFlagBits stageFlag = VK_SHADER_STAGE_VERTEX_BIT, const char* startFuncName = "main")
+//    {
+//        shaderStages[idx].stage = stageFlag;
+//        shaderStages[idx].module = shaderModule;
+//        shaderStages[idx].pName = startFuncName;
+//    }
+//
+//    // ---- Vertex input ----
+//    void FillBinding(uint32_t idx, uint32_t binding, uint32_t stride, VkVertexInputRate inputRate)
+//    {
+//        bindings[idx].binding = binding; // номер аппаратного слота
+//        bindings[idx].stride = stride; // размер одной вершины
+//        bindings[idx].inputRate = inputRate;
+//    }
+//
+//    void FillAttribute(uint32_t idx, uint32_t binding, uint32_t location, uint32_t offset, VkFormat format)
+//    {
+//        attributes[idx].binding = binding;
+//        attributes[idx].location = location;
+//        attributes[idx].format = format;
+//        attributes[idx].offset = offset;
+//    }
+//
+//    // без аргументов: взять весь вектор
+//    inline void SetVertexInputStateBindings(uint32_t count = Range::kAll, uint32_t offset = 0)
+//    {
+//        bindingsRange = Range(count, offset);
+//    }
+//    inline void SetVertexInputStateAttributes(uint32_t count = Range::kAll, uint32_t offset = 0)
+//    {
+//        attributesRange = Range(count, offset);
+//    }
+//
+//    // ---- Viewport ----
+//    inline void FillViewport(uint32_t idx, VkExtent2D extent, float x = 0, float y = 0, float minDepth = 0.0, float maxDepth = 1.0)
+//    {
+//        viewports[idx].x = x;
+//        viewports[idx].y = y;
+//        viewports[idx].width = static_cast<float>(extent.width);
+//        viewports[idx].height = static_cast<float>(extent.height);
+//        viewports[idx].minDepth = minDepth;
+//        viewports[idx].maxDepth = maxDepth;
+//    }
+//    inline void FillViewport(uint32_t idx, float width, float height, float x = 0, float y = 0, float minDepth = 0.0, float maxDepth = 1.0)
+//    {
+//        viewports[idx].x = x;
+//        viewports[idx].y = y;
+//        viewports[idx].width = width;
+//        viewports[idx].height = height;
+//        viewports[idx].minDepth = minDepth;
+//        viewports[idx].maxDepth = maxDepth;
+//    }
+//    inline void FillScissor(uint32_t idx, VkExtent2D extent, VkOffset2D offset = { 0, 0 })
+//    {
+//        scissors[idx].extent = extent;
+//        scissors[idx].offset = offset;
+//    }
+//
+//    inline void SetViewportStateViewports(uint32_t count = Range::kAll, uint32_t offset = 0)
+//    {
+//        viewportsRange = Range(count, offset);
+//    }
+//    inline void SetViewportStateScissors(uint32_t count = Range::kAll, uint32_t offset = 0)
+//    {
+//        scissorsRange = Range(count, offset);
+//    }
+//
+//    // ---- Color blend ----
+//    // По умолчанию: бленд выключен, пишутся все каналы. Факторы ONE/ZERO и операция ADD дают "результат = источник",
+//    // поэтому если включить blendEnable и не трогать остальное, картинка не изменится (а не станет черной)
+//    inline void FillBlendAttachment(uint32_t idx,
+//        VkBool32              blendEnable = VK_FALSE,
+//        VkBlendFactor         srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+//        VkBlendFactor         dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+//        VkBlendOp             colorBlendOp = VK_BLEND_OP_ADD,
+//        VkBlendFactor         srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+//        VkBlendFactor         dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+//        VkBlendOp             alphaBlendOp = VK_BLEND_OP_ADD,
+//        VkColorComponentFlags colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+//        VK_COLOR_COMPONENT_G_BIT |
+//        VK_COLOR_COMPONENT_B_BIT |
+//        VK_COLOR_COMPONENT_A_BIT)
+//    {
+//        blendAttachments[idx].blendEnable = blendEnable;
+//        blendAttachments[idx].srcColorBlendFactor = srcColorBlendFactor;
+//        blendAttachments[idx].dstColorBlendFactor = dstColorBlendFactor;
+//        blendAttachments[idx].colorBlendOp = colorBlendOp;
+//        blendAttachments[idx].srcAlphaBlendFactor = srcAlphaBlendFactor;
+//        blendAttachments[idx].dstAlphaBlendFactor = dstAlphaBlendFactor;
+//        blendAttachments[idx].alphaBlendOp = alphaBlendOp;
+//        blendAttachments[idx].colorWriteMask = colorWriteMask;
+//    }
+//
+//    inline void SetColorBlendStateAttachments(uint32_t count = Range::kAll, uint32_t offset = 0)
+//    {
+//        blendAttachmentsRange = Range(count, offset);
+//    }
+//
+//    // ---- Dynamic state ----
+//    inline void FillDynamicState(uint32_t idx, VkDynamicState state)
+//    {
+//        dynamicStates[idx] = state;
+//    }
+//    inline void SetDynamicStates(uint32_t count = Range::kAll, uint32_t offset = 0)
+//    {
+//        dynamicStatesRange = Range(count, offset);
+//    }
+//
+//    // ---- Rendering info ----
+//    inline void SetRenderingInfoAttachment(VkFormat* formats, uint32_t count)
+//    {
+//        renderingInfo.colorAttachmentCount = count;
+//        renderingInfo.pColorAttachmentFormats = formats; // данные о цветовой политре surface
+//    }
+//
+//    VkPipeline Create(VkDevice& device)
+//    {
+//        ApplyRanges(); // счетчики и указатели ставятся здесь, из текущих векторов и Range
+//
+//        VkPipelineLayout screenPipelineLayout;                                                                                                  // VkPipelineLayout (ресурсы для стадии \ дескрипторы, пуши и тд)
+//        vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, nullptr, &screenPipelineLayout);
+//
+//        // есть еще VkComputePipelineCreateInfo
+//        VkGraphicsPipelineCreateInfo pipelineCreateInfo{};                                                                                      // VkGraphicsPipelineCreateInfo (собирает все в один pipeline \ можно указать от какого pipeline отталкиваться при компиляции)
+//        pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO; // sType сдесь разный, может быть VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+//        pipelineCreateInfo.pNext = &renderingInfo;
+//        pipelineCreateInfo.stageCount = shaderStages.size(); // бедет задействованы два шейдера
+//        pipelineCreateInfo.pStages = shaderStages.data(); // шейдеры
+//        pipelineCreateInfo.pVertexInputState = &vertexInputState;
+//        pipelineCreateInfo.pInputAssemblyState = &inputAssembly;
+//        pipelineCreateInfo.pViewportState = &viewportState;
+//        pipelineCreateInfo.pRasterizationState = &rasterizer;
+//        pipelineCreateInfo.pMultisampleState = &multisampling;
+//        pipelineCreateInfo.pColorBlendState = &colorBlendState;
+//        pipelineCreateInfo.pDynamicState = &dynamicState;
+//        pipelineCreateInfo.layout = screenPipelineLayout;
+//        VkPipeline scenePipeline; // создание pipeline
+//        if (vkCreateGraphicsPipelines(
+//            device,
+//            VK_NULL_HANDLE,
+//            1,
+//            &pipelineCreateInfo,
+//            nullptr,
+//            &scenePipeline) != VK_SUCCESS)
+//        {
+//            throw std::runtime_error("Scene pipeline not create");
+//        }
+//        return scenePipeline;
+//    }
+//
+//    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
+//    std::vector<PipelineShaderStageCreateInfo> shaderStages{};
+//
+//    std::vector<VkVertexInputBindingDescription> bindings{}; // с каким шагом читать
+//    Range bindingsRange{};
+//    std::vector<VkVertexInputAttributeDescription> attributes{};
+//    Range attributesRange{};
+//    VkPipelineVertexInputStateCreateInfo vertexInputState{}; // настраиваем все параметры и данные к шейдеру
+//
+//    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+//
+//    std::vector<VkViewport> viewports{}; // берем область для отрисовки
+//    Range viewportsRange{};
+//    std::vector<VkRect2D> scissors{};
+//    Range scissorsRange{};
+//    VkPipelineViewportStateCreateInfo viewportState{};
+//
+//    VkPipelineRasterizationStateCreateInfo rasterizer{}; // правила отрисовки
+//    VkPipelineMultisampleStateCreateInfo multisampling{}; // сглаживание геометрии
+//
+//    std::vector<VkPipelineColorBlendAttachmentState> blendAttachments{}; // решает что делать с наложением
+//    Range blendAttachmentsRange{};
+//    VkPipelineColorBlendStateCreateInfo colorBlendState{};
+//
+//    std::vector<VkDynamicState> dynamicStates{};
+//    Range dynamicStatesRange{};
+//    VkPipelineDynamicStateCreateInfo dynamicState{}; // динамические состояния, которые придеться передавать в цикле
+//
+//    VkPipelineRenderingCreateInfo renderingInfo{}; // TODO: Это pNext и нужно подумать
+//
+//private:
+//    template<typename T>
+//    static uint32_t ResolveCount(const Range& r, const std::vector<T>& v)
+//    {
+//        assert(r.offset <= v.size());
+//        uint32_t count = (r.count == Range::kAll) ? static_cast<uint32_t>(v.size()) - r.offset : r.count;
+//        assert(r.offset + count <= v.size());
+//        return count;
+//    }
+//
+//    void ApplyRanges()
+//    {
+//        vertexInputState.vertexBindingDescriptionCount = ResolveCount(bindingsRange, bindings);
+//        vertexInputState.pVertexBindingDescriptions = bindings.data() + bindingsRange.offset;
+//        vertexInputState.vertexAttributeDescriptionCount = ResolveCount(attributesRange, attributes);
+//        vertexInputState.pVertexAttributeDescriptions = attributes.data() + attributesRange.offset;
+//
+//        viewportState.viewportCount = ResolveCount(viewportsRange, viewports);
+//        viewportState.pViewports = viewports.data() + viewportsRange.offset;
+//        viewportState.scissorCount = ResolveCount(scissorsRange, scissors);
+//        viewportState.pScissors = scissors.data() + scissorsRange.offset;
+//
+//        colorBlendState.attachmentCount = ResolveCount(blendAttachmentsRange, blendAttachments);
+//        colorBlendState.pAttachments = blendAttachments.data() + blendAttachmentsRange.offset;
+//
+//        dynamicState.dynamicStateCount = ResolveCount(dynamicStatesRange, dynamicStates);
+//        dynamicState.pDynamicStates = dynamicStates.data() + dynamicStatesRange.offset;
+//    }
+//};
+
+
+
+
+
+
+
+// TODO: Глянуть на его реализацию и изменить свою
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 void VulkanInterface::Init(InitVulkanInterface& initVulkanInterface, GLFWwindow*& window, const VkAllocationCallbacks* pAllocator)
     {
         volkInitialize();
@@ -556,7 +1505,8 @@ VkQueue VulkanInterface::CreateQueue(VkDevice device, uint32_t queueFamilyIndex,
     return queue;
 }
 
-void VulkanInterface::LoadShader(std::string &path, VkShaderModule& shader, VkDevice &deviceHandle)
+// TODO: добавить загрузку обычного символьного шейдера (как-то через инструменты вулкана)
+VkShaderModule VulkanInterface::LoadShader(std::string path, VkDevice &device, const VkAllocationCallbacks* pAllocator)
     {
         auto vertexShaderCode = ReadBinary(path);
 
@@ -565,6 +1515,8 @@ void VulkanInterface::LoadShader(std::string &path, VkShaderModule& shader, VkDe
         shaderModuleCreateInfo.codeSize = vertexShaderCode.size();
         shaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t*>(vertexShaderCode.data());
 
-        vkCreateShaderModule(deviceHandle, &shaderModuleCreateInfo, nullptr, &shader);
+        VkShaderModule shader;
+        vkCreateShaderModule(device, &shaderModuleCreateInfo, pAllocator, &shader);
+        return shader;
     }
 
